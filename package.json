@@ -1,10 +1,11 @@
 {
-  "name": "rescript-project-template",
+  "name": "dim",
   "version": "0.0.1",
   "scripts": {
     "build": "rescript",
     "clean": "rescript clean -with-deps",
-    "start": "rescript build -w"
+    "start": "parcel serve ./public/index.html",
+    "dev": "concurrently \"parcel ./public/index.html\" \"rescript build -w\" "
   },
   "keywords": [
     "rescript"
@@ -12,6 +13,15 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@rescript/react": "^0.10.3",
+    "bs-fetch": "^0.6.2",
+    "prettier": "^2.4.1",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
     "rescript": "*"
+  },
+  "devDependencies": {
+    "concurrently": "^6.2.1",
+    "parcel": "^2.0.0-rc.0"
   }
 }
