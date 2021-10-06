@@ -1,7 +1,9 @@
 @val external window: {..} = "window"
 @send external click: Dom.element => unit = "click"
+@send external focus: Dom.element => unit = "focus"
 
 module Tree = {
+  open Belt
   type rec tree<'n> = {
     label: 'n,
     forest: array<tree<'n>>,
@@ -11,11 +13,11 @@ module Tree = {
     hasChildren: bool,
   }
   let select = (ts, selection) => {
-    let (_, s, fs) = Belt.Array.reduce(selection, (true, [Array.length(ts)], ts), (acm, p) => {
+    let (_, s, fs) = Array.reduce(selection, (true, [Array.length(ts)], ts), (acm, p) => {
       switch acm {
       | (true, ss, ts) =>
-        switch Belt.Array.get(ts, p) {
-        | Some(n) => (true, Belt.Array.concat(ss, [Array.length(n.forest)]), n.forest)
+        switch ts[p] {
+        | Some(n) => (true, Array.concat(ss, [Array.length(n.forest)]), n.forest)
         | _ => acm
         }
       | _ => acm
@@ -23,9 +25,31 @@ module Tree = {
     })
     {range: s, hasChildren: Array.length(fs) > 0}
   }
+  let map = (t: tree<'n>, fn: (array<int>, tree<'n>) => array<tree<'n>>): array<tree<'n>> => {
+    let rec traverse = (fs: array<tree<'n>>, pos: array<int>) => {
+      fs
+      ->Array.mapWithIndex((i, t): array<tree<'n>> => {
+        let p = Array.concat(pos, [i])
+        fn(p, t)->Array.map((tt): tree<'n> => {
+          {
+            label: tt.label,
+            forest: traverse(tt.forest, p),
+          }
+        })
+      })
+      ->Array.concatMany
+    }
+    traverse([t], [])
+  }
+  let get = (t: tree<'n>, index: array<int>): option<'n> => {
+    index
+    ->Array.reduce(Some(t), (acm, i) => {
+      acm->Option.flatMap(t => t.forest[i])
+    })
+    ->Option.map(t => t.label)
+  }
 }
 
-let {select: selectTree, select} = module(Tree)
 type tree<'n> = Tree.tree<'n>
 
 type valueUnit = {
@@ -94,14 +118,56 @@ type keySetting = {
   keyLeft: array<keySet>,
   keyRight: array<keySet>,
   keyEnter: array<keySet>,
+  keyAppend: array<keySet>,
+  keyScrollUp: array<keySet>,
+  keyScrollDown: array<keySet>,
+  keyEdit: array<keySet>,
+  escape: array<keySet>,
 }
 
 type setting = {keySetting: keySetting}
+
+let getKeyboardSetting = (~ks: option<keySetting>=?, ()): keySetting => {
+  let mapping = (
+    ~keyUp: array<keySet>=[keySet("ArrowUp"), keySet("KeyK")],
+    ~keyDown: array<keySet>=[keySet("ArrowDown"), keySet("KeyJ")],
+    ~keyLeft: array<keySet>=[keySet("ArrowLeft"), keySet("KeyH")],
+    ~keyRight: array<keySet>=[keySet("ArrowRight"), keySet("KeyL")],
+    ~keyEnter: array<keySet>=[keySet("KeyM"), keySet("Enter")],
+    ~keyAppend: array<keySet>=[keySet("KeyO")],
+    ~keyScrollDown: array<keySet>=[keySet("KeyF", ~ctrlKey=true)],
+    ~keyScrollUp: array<keySet>=[keySet("KeyB", ~ctrlKey=true)],
+    ~keyEdit: array<keySet>=[keySet("KeyE")],
+    ~escape: array<keySet>=[keySet("Escape")],
+    (),
+  ): keySetting => {
+    keyUp: keyUp,
+    keyDown: keyDown,
+    keyLeft: keyLeft,
+    keyRight: keyRight,
+    keyEnter: keyEnter,
+    keyAppend: keyAppend,
+    keyScrollDown: keyScrollDown,
+    keyScrollUp: keyScrollUp,
+    keyEdit: keyEdit,
+    escape: escape,
+  }
+  switch ks {
+  | Some({keyDown, keyUp, keyLeft, keyRight, keyEnter, keyAppend, keyEdit, escape}) =>
+    mapping(~keyDown, ~keyUp, ~keyLeft, ~keyRight, ~keyEnter, ~keyAppend, ~keyEdit, ~escape, ())
+  | _ => mapping()
+  }
+}
+
+type mode =
+  | Normal
+  | Edit
 
 type state = {
   selection: selection,
   container: container,
   setting: setting,
+  mode: mode,
 }
 
 type direction =
@@ -112,56 +178,43 @@ type direction =
 
 type action =
   | Add(int)
+  | Append
+  | Edit(array<int>, schemaBody)
   | CursorAction(direction)
   | MarkAction
   | SwapAction
   | Load(state)
+  | ChangeMode(mode)
 
 let moveCursorAction = (state, selectAction) => {
+  open Belt
   let {selection, container} = state
   let next = switch selection {
   | SchemaSelection({cursor, mark}) => {
-      let selectDepth = Belt.Array.length(cursor)
+      let selectDepth = Array.length(cursor)
       let {body} = containerSchema(container)
-      let selection = select([body], cursor)
+      let selection = Tree.select([body], cursor)
       let {range, hasChildren} = selection
-      let rangeDepth = Belt.Array.length(range)
+      let rangeDepth = Array.length(range)
 
       let cursor = switch selectAction {
-      | Left => selectDepth > 1 ? Belt.Array.slice(cursor, ~len=selectDepth - 1, ~offset=0) : cursor
-      | Right =>
-        hasChildren
-          ? Belt.Array.concat(Belt.Array.slice(cursor, ~len=rangeDepth, ~offset=0), [0])
-          : cursor
-      | Down =>
-        if selectDepth <= rangeDepth {
-          let currentIndex = cursor[selectDepth - 1]
-          let currentForestMaxLength = range[selectDepth - 1]
-          currentIndex < currentForestMaxLength - 1
-            ? Belt.Array.concat(
-                Belt.Array.slice(cursor, ~len=selectDepth - 1, ~offset=0),
-                [currentIndex + 1],
-              )
-            : cursor
-        } else {
-          cursor
+      | Left if selectDepth > 1 => Array.slice(cursor, ~len=selectDepth - 1, ~offset=0)
+      | Right if hasChildren => Array.concat(Array.slice(cursor, ~len=rangeDepth, ~offset=0), [0])
+      | Down if selectDepth <= rangeDepth =>
+        switch (cursor[selectDepth - 1], range[selectDepth - 1]) {
+        | (Some(currentIndex), Some(currentForestMaxLength))
+          if currentIndex < currentForestMaxLength - 1 =>
+          Array.concat(Array.slice(cursor, ~len=selectDepth - 1, ~offset=0), [currentIndex + 1])
+        | _ => cursor
         }
-
-      | Up =>
-        if selectDepth <= rangeDepth {
-          let currentIndex = cursor[selectDepth - 1]
-
+      | Up if selectDepth <= rangeDepth =>
+        cursor[selectDepth - 1]->Option.mapWithDefault(cursor, currentIndex =>
           0 < currentIndex
-            ? Belt.Array.concat(
-                Belt.Array.slice(cursor, ~len=selectDepth - 1, ~offset=0),
-                [currentIndex - 1],
-              )
+            ? Array.concat(Array.slice(cursor, ~len=selectDepth - 1, ~offset=0), [currentIndex - 1])
             : cursor
-        } else {
-          cursor
-        }
+        )
+      | _ => cursor
       }
-
       {
         ...state,
         selection: SchemaSelection({
@@ -172,11 +225,11 @@ let moveCursorAction = (state, selectAction) => {
     }
   | ValueSelection(_) => state
   }
-  Js.log(next)
   next
 }
 
 let swapUpdate = state => {
+  open Belt
   let {selection, container} = state
 
   switch selection {
@@ -184,23 +237,27 @@ let swapUpdate = state => {
       let {id, name, body} = containerSchema(container)
       let markLen = Array.length(mark)
       let cursorLen = Array.length(cursor)
-      if markLen === cursorLen {
+      if markLen == cursorLen {
         // todo: fix this algorithm
-        let rec r = (ts: array<tree<schemaBody>>, pos: array<int>): array<tree<schemaBody>> => {
-          Belt.Array.mapWithIndex(ts, (i, t) => {
-            let p = Belt.Array.concat(pos, [i])
-            if markLen === Array.length(p) {
-              if Belt.Array.eq(p, mark, (a, b) => a === b) {
-                ts[cursor[markLen - 1]]
-              } else if Belt.Array.eq(p, cursor, (a, b) => a === b) {
-                ts[mark[markLen - 1]]
+        let rec traverse = (ts: array<tree<schemaBody>>, pos: array<int>): array<
+          tree<schemaBody>,
+        > => {
+          Array.mapWithIndex(ts, (i, t) => {
+            let p = Array.concat(pos, [i])
+            if markLen == Array.length(p) {
+              if p == mark {
+                cursor[markLen - 1]
+              } else if p == cursor {
+                mark[markLen - 1]
               } else {
-                t
+                None
               }
+              ->Option.flatMap(c => ts[c])
+              ->Option.getWithDefault(t)
             } else {
               {
                 label: t.label,
-                forest: r(t.forest, p),
+                forest: traverse(t.forest, p),
               }
             }
           })
@@ -213,7 +270,7 @@ let swapUpdate = state => {
               name: name,
               body: {
                 label: body.label,
-                forest: r(body.forest, [0]),
+                forest: traverse(body.forest, [0]),
               },
             },
             value: [],
@@ -233,34 +290,16 @@ let swapUpdate = state => {
 }
 
 let isFilled = (a: array<int>, b: array<int>): bool => {
-  Belt.Array.length(a) <= Belt.Array.length(b) &&
-    Belt.Array.reduceWithIndex(a, true, (acm, p, i) => {
-      acm && p === Belt.Array.getUnsafe(b, i)
+  open Belt
+  Array.length(a) <= Array.length(b) &&
+    Array.reduceWithIndex(a, true, (acm, p, i) => {
+      acm && p === Array.getUnsafe(b, i)
     })
 }
 
-type mapTree<'n> = (tree<'n>, (array<int>, tree<'n>) => array<tree<'n>>) => tree<'n>
-let mapTree: mapTree<'n> = (t, fn): tree<'n> => {
-  let rec traverse = (fs: array<tree<'n>>, pos: array<int>) => {
-    Belt.Array.concatMany(
-      Belt.Array.mapWithIndex(fs, (i, t): array<tree<'n>> => {
-        let p = Belt.Array.concat(pos, [i])
-        Belt.Array.map(fn(p, t), (tt): tree<'n> => {
-          {
-            label: tt.label,
-            forest: traverse(tt.forest, p),
-          }
-        })
-      }),
-    )
-  }
-  {
-    label: t.label,
-    forest: traverse(t.forest, [0]),
-  }
-}
-
 let reducer = (state, action) => {
+  open Belt
+  Js.log(action)
   switch action {
   | Add(_) => state
   | CursorAction(v) => moveCursorAction(state, v)
@@ -280,43 +319,139 @@ let reducer = (state, action) => {
     }
   | SwapAction => swapUpdate(state)
   | Load(state) => state
+  | Append => {
+      let {selection, container} = state
+      switch selection {
+      | SchemaSelection({cursor}) =>
+        switch container {
+        | Enumerable({schema: {id, name, body}, value}) => {
+            ...state,
+            container: Enumerable({
+              value: value,
+              schema: {
+                id: id,
+                name: name,
+                body: Tree.map(body, (p, t) =>
+                  p == cursor ? [t, t] : [t]
+                )[0]->Option.getWithDefault(body),
+              },
+            }),
+          }
+        | _ => state
+        }
+      | ValueSelection(_) => state
+      }
+    }
+  | Edit(position, editValue) => {
+      let {container} = state
+      switch container {
+      | Enumerable({schema: {id, name, body}, value}) => {
+          ...state,
+          container: Enumerable({
+            value: value,
+            schema: {
+              id: id,
+              name: name,
+              body: Tree.map(body, (p, t) =>
+                p == position ? [{...t, label: editValue}] : [t]
+              )[0]->Option.getWithDefault(body),
+            },
+          }),
+        }
+      | _ => state
+      }
+    }
+  | ChangeMode(mode) => {
+      ...state,
+      mode: mode,
+    }
+  }
+}
+
+module SchemaText = {
+  @react.component
+  let make = (~label: string) => {
+    <div> {React.string(label)} <span> {React.string("(number)")} </span> </div>
+  }
+}
+
+module EditArea = {
+  open Belt
+  @react.component
+  let make = (~value: string, ~onChange: string => unit) => {
+    let handleEdit = React.useCallback1(ev => {
+      ReactEvent.Form.stopPropagation(ev)
+      ReactEvent.Form.target(ev)["value"]->onChange
+    }, [onChange])
+    let ref = React.useRef(Js.Nullable.null)
+    React.useEffect0(() => {
+      ref.current->Js.Nullable.toOption->Option.forEach(i => i->focus)
+      None
+    })
+    <input onChange={handleEdit} value={value} ref={ReactDOM.Ref.domRef(ref)} />
   }
 }
 
 module SchemaLabel = {
   @react.component
-  let make = (~label: schemaBody, ~position: array<int>, ~selection: option<schemaSelection>) => {
-    Js.log(selection)
-    Js.log(position)
+  let make = (
+    ~label: schemaBody,
+    ~position: array<int>,
+    ~selection: option<schemaSelection>,
+    ~edit: React.callback<(array<int>, schemaBody), unit>,
+    ~mode: mode,
+  ) => {
+    open Belt
+    let schemaLabel = switch label {
+    | SText(label) => label
+    | SNumber({label}) => label
+    }
+    let handleEdit = React.useCallback3(value => {
+      Js.log(value)
+      edit((
+        position,
+        switch label {
+        | SText(_) => SText(value)
+        | SNumber({unit}) => SNumber({label: value, unit: unit})
+        },
+      ))
+    }, (edit, label, position))
     let (isSelected, isMarked) = switch selection {
-    | Some({cursor, mark}) => (
-        Belt.Array.eq(position, cursor, (a, b) => a === b),
-        Belt.Array.eq(position, mark, (a, b) => a === b),
-      )
+    | Some({cursor, mark}) => (position == cursor, position == mark)
     | _ => (false, false)
     }
-    <div
-      style={ReactDOM.Style.make(
-        ~backgroundColor=isSelected
-          ? "rgba(128, 128, 96, 0.5)"
-          : isMarked
-          ? "rgba(216, 255, 216, 1)"
-          : "transparent",
-        ~paddingLeft=`${(Belt.Array.length(position) * 24)->Js.Int.toString}px`,
-        (),
-      )}>
-      {switch label {
-      | SNumber({label, unit: {id: _id, name: _name}}) =>
-        <div> {React.string(label)} <span> {React.string("(number)")} </span> </div>
-      | SText(label) => <div> {React.string(label)} <span> {React.string("(label)")} </span> </div>
+
+    <>
+      {Array.reduce(position, "", (acm, p) => acm ++ Int.toString(p))->React.string}
+      {switch mode {
+      | Edit if isSelected => <EditArea value={schemaLabel} onChange={handleEdit} />
+      | _ =>
+        <div
+          style={ReactDOM.Style.make(
+            ~backgroundColor=isSelected
+              ? "rgba(128, 128, 96, 0.5)"
+              : isMarked
+              ? "rgba(216, 255, 216, 1)"
+              : "transparent",
+            ~paddingLeft=`${(Belt.Array.length(position) * 24)->Js.Int.toString}px`,
+            (),
+          )}>
+          {switch label {
+          | SNumber({label, unit: {id: _id, name: _name}}) => <SchemaText label={label} />
+          | SText(label) =>
+            <div> {React.string(label)} <span> {React.string("(label)")} </span> </div>
+          }}
+        </div>
       }}
-    </div>
+    </>
   }
 }
 type schemaBlockProps = {
   tree: tree<schemaBody>,
   selection: option<schemaSelection>,
   position: array<int>,
+  edit: React.callback<(array<int>, schemaBody), unit>,
+  mode: mode,
 }
 
 module type SchemaBlock = {
@@ -326,31 +461,35 @@ module type SchemaBlock = {
     ~tree: tree<schemaBody>,
     ~selection: option<schemaSelection>=?,
     ~position: array<int>,
-    ~key: string,
+    ~edit: React.callback<(array<int>, schemaBody), unit>,
+    ~mode: mode,
+    ~key: string=?,
     unit,
   ) => props = ""
+
   let make: schemaBlockProps => React.element
 }
 
 module rec SchemaBlock: SchemaBlock = {
   type props = schemaBlockProps
-
   @obj
   external makeProps: (
     ~tree: tree<schemaBody>,
     ~selection: option<schemaSelection>=?,
     ~position: array<int>,
-    ~key: string,
+    ~edit: React.callback<(array<int>, schemaBody), unit>,
+    ~mode: mode,
+    ~key: string=?,
     unit,
   ) => props = ""
 
-  let make = ({tree, selection, position}) => {
+  let make = ({tree, selection, position, edit, mode}) => {
     <>
-      <SchemaLabel label={tree.label} position={position} selection={selection} />
+      <SchemaLabel label={tree.label} position selection edit mode />
       {Belt.Array.mapWithIndex(tree.forest, (i, f) => {
         let pos = Belt.Array.concat(position, [i])
         let key = Belt.Array.reduce(pos, "", (acm, p) => `${acm} ${p->Belt.Int.toString}`)
-        <SchemaBlock tree={f} selection={selection} position={pos} key={key} />
+        <SchemaBlock tree={f} selection position={pos} edit mode key />
       })->React.array}
     </>
   }
@@ -404,24 +543,20 @@ let mock = {
     ],
   }),
   setting: {
-    keySetting: {
-      keyDown: [keySet("ArrowDown"), keySet("KeyJ")],
-      keyLeft: [keySet("ArrowLeft"), keySet("KeyH")],
-      keyRight: [keySet("ArrowRight"), keySet("KeyL")],
-      keyEnter: [keySet("KeyM"), keySet("Enter")],
-      keyUp: [keySet("ArrowUp"), keySet("KeyK")],
-    },
+    keySetting: getKeyboardSetting(),
   },
+  mode: Normal,
 }
 
 module DownloadButton = {
+  open Belt
   @react.component
   let make = (~content: state) => {
     let anchor = React.useRef(Js.Nullable.null)
     <>
       <button
         onClick={_ => {
-          anchor.current->Js.Nullable.toOption->Belt.Option.forEach(a => a->click)
+          anchor.current->Js.Nullable.toOption->Option.forEach(a => a->click)
         }}>
         {"download"->React.string}
       </button>
@@ -441,7 +576,6 @@ module UploadButton = {
   let make = (~_upload_: state => unit) => {
     let inputRef = React.useRef(Js.Nullable.null)
     <>
-      <input type_={"file"} accept={".json, .text, .txt"} ref={ReactDOM.Ref.domRef(inputRef)} />
       <button
         onClick={%raw(`() => {
             if(inputRef.current && inputRef.current.files.length > 0) {
@@ -456,22 +590,42 @@ module UploadButton = {
         }`)}>
         {React.string("upload")}
       </button>
+      <input type_={"file"} accept={".json, .text, .txt"} ref={ReactDOM.Ref.domRef(inputRef)} />
     </>
   }
 }
 
 module App = {
+  open Belt
   @react.component
   let make = () => {
     let (state, dispatch) = React.useReducer(reducer, mock)
-    let {selection, container, setting: {keySetting}} = state
-    let Enumerable({schema: {body}, value}) = container
+    let {selection, container, setting: {keySetting}, mode} = state
+    let ({body}, value) = switch container {
+    | Enumerable({schema, value}) => (schema, value)
+    | Transitional({schema, value}) => (schema, value)
+    | MasterSlave({schema, value}) => (schema, [value.master])
+    }
 
-    let {keyDown, keyUp, keyLeft, keyRight, keyEnter} = keySetting
+    let edit = React.useCallback1(((pos: array<int>, schemaBody)) => {
+      dispatch(Edit(pos, schemaBody))
+    }, [dispatch])
 
     React.useEffect1(() => {
+      let {
+        keyDown,
+        keyUp,
+        keyLeft,
+        keyRight,
+        keyEnter,
+        keyAppend,
+        keyScrollUp,
+        keyScrollDown,
+        keyEdit,
+        escape,
+      } = getKeyboardSetting(~ks=keySetting, ())
       let onInput = (inp: keySet, s: array<keySet>, fn: unit => unit) => {
-        let r = Belt.Array.some(s, k => eq(k, inp))
+        let r = Array.some(s, k => eq(k, inp))
         if r {
           fn()
         }
@@ -486,7 +640,7 @@ module App = {
         }
         let handle = input->onInput
 
-        Belt.Array.some(
+        Array.some(
           [
             keyDown->handle(() => {
               dispatch(CursorAction(Down))
@@ -503,6 +657,25 @@ module App = {
             keyEnter->handle(() => {
               dispatch(MarkAction)
             }),
+            keyAppend->handle(() => {
+              dispatch(Append)
+            }),
+            keyScrollDown->handle(
+              %raw(`() => {
+                scrollBy(0, innerHeight)
+            }`),
+            ),
+            keyScrollUp->handle(
+              %raw(`() => {
+                scrollBy(0, -innerHeight)
+            }`),
+            ),
+            keyEdit->handle(() => {
+              dispatch(ChangeMode(Edit))
+            }),
+            escape->handle(() => {
+              dispatch(ChangeMode(Normal))
+            }),
           ],
           c => c,
         )
@@ -516,8 +689,8 @@ module App = {
     | _ => None
     }
     <div>
-      <SchemaBlock tree={body} selection={schemaSelection} position={[0]} key="root" />
-      <ValueArray value={value} />
+      <SchemaBlock tree={body} selection={schemaSelection} position={[0]} edit mode />
+      <ValueArray value />
       <div
         style={ReactDOM.Style.make(
           ~position="fixed",
@@ -527,8 +700,8 @@ module App = {
           ~flexDirection="column",
           (),
         )}>
-        <DownloadButton content={state} />
         <UploadButton _upload_={state => dispatch(Load(state))} />
+        <DownloadButton content={state} />
       </div>
     </div>
   }

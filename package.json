@@ -6,7 +6,7 @@
     "clean": "rescript clean -with-deps",
     "start": "parcel serve ./public/index.html",
     "dev": "concurrently \"parcel ./public/index.html\" \"rescript build -w\" ",
-    "test": "npm run build && retest test/*.bs.js"
+    "test": "retest test/*.bs.js"
   },
   "keywords": [
     "rescript"
