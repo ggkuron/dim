@@ -232,6 +232,34 @@ let swapUpdate = state => {
   }
 }
 
+let isFilled = (a: array<int>, b: array<int>): bool => {
+  Belt.Array.length(a) <= Belt.Array.length(b) &&
+    Belt.Array.reduceWithIndex(a, true, (acm, p, i) => {
+      acm && p === Belt.Array.getUnsafe(b, i)
+    })
+}
+
+type mapTree<'n> = (tree<'n>, (array<int>, tree<'n>) => array<tree<'n>>) => tree<'n>
+let mapTree: mapTree<'n> = (t, fn): tree<'n> => {
+  let rec traverse = (fs: array<tree<'n>>, pos: array<int>) => {
+    Belt.Array.concatMany(
+      Belt.Array.mapWithIndex(fs, (i, t): array<tree<'n>> => {
+        let p = Belt.Array.concat(pos, [i])
+        Belt.Array.map(fn(p, t), (tt): tree<'n> => {
+          {
+            label: tt.label,
+            forest: traverse(tt.forest, p),
+          }
+        })
+      }),
+    )
+  }
+  {
+    label: t.label,
+    forest: traverse(t.forest, [0]),
+  }
+}
+
 let reducer = (state, action) => {
   switch action {
   | Add(_) => state
@@ -509,5 +537,4 @@ module App = {
 @react.component
 let make = () => {
   <App />
-  // <input onChange={(ev) => handleChange(ReactEvent.Form.target(ev)["value"])} value={state} />
 }
