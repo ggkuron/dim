@@ -223,6 +223,7 @@ let moveCursorAction = (state, selectAction) => {
         }),
       }
     }
+
   | ValueSelection(_) => state
   }
   next
@@ -285,6 +286,7 @@ let swapUpdate = state => {
         state
       }
     }
+
   | _ => state
   }
 }
@@ -312,6 +314,7 @@ let reducer = (state, action) => {
         }
         Array.length(mark) > 0 && Array.length(cursor) > 0 ? swapUpdate(state) : markedUpdated
       }
+
     | ValueSelection({cursor}) => {
         ...state,
         selection: ValueSelection({cursor: cursor, mark: cursor}),
@@ -342,6 +345,7 @@ let reducer = (state, action) => {
       | ValueSelection(_) => state
       }
     }
+
   | Edit(position, editValue) => {
       let {container} = state
       switch container {
@@ -361,6 +365,7 @@ let reducer = (state, action) => {
       | _ => state
       }
     }
+
   | ChangeMode(mode) => {
       ...state,
       mode: mode,
